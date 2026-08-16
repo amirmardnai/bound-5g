@@ -1,5 +1,6 @@
 package com.app.bound.screens
 
+import android.telephony.SubscriptionManager
 import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
@@ -41,8 +42,8 @@ fun DashboardScreen(
     val scope = rememberCoroutineScope()
     val cellularState by telemetryEngine.cellularState.collectAsState()
 
-    var availableSubIds by remember { mutableStateOf<List<Int>>(listOf(1, 2)) }
-    var selectedSubId by remember { mutableStateOf<Int?>(null) }
+    var availableSubIds by remember { mutableStateOf<List<Int>>(listOf(1)) }
+    var selectedSubId by remember { mutableStateOf<Int?>(1) }
     var isSwitchingMode by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("Ready to configure MediaTek modem & cellular bands.") }
     var showSetupDialog by remember { mutableStateOf(false) }
@@ -50,6 +51,13 @@ fun DashboardScreen(
     var isShizukuActive by remember { mutableStateOf(shizukuManager.isAuthorized()) }
 
     DisposableEffect(Unit) {
+        val sm = context.getSystemService(SubscriptionManager::class.java)
+        val activeSubs = runCatching { sm?.activeSubscriptionInfoList }.getOrNull()
+        if (!activeSubs.isNullOrEmpty()) {
+            availableSubIds = activeSubs.map { it.subscriptionId }
+            selectedSubId = availableSubIds.firstOrNull() ?: 1
+        }
+
         val unregister = shizukuManager.registerListeners { _, authorized ->
             isShizukuActive = authorized
         }
@@ -62,11 +70,6 @@ fun DashboardScreen(
 
     LaunchedEffect(selectedSubId) {
         telemetryEngine.refreshNow(selectedSubId)
-        scope.launch {
-            if (isShizukuActive) {
-                availableSubIds = shizukuManager.getAvailableSubIds()
-            }
-        }
     }
 
     if (showSetupDialog) {
@@ -103,6 +106,7 @@ fun DashboardScreen(
                                 is SwitchResult.Failure -> "⚠️ ${res.reason}"
                             }
                             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                            telemetryEngine.refreshNow(selectedSubId)
                             isSwitchingMode = false
                         }
                     },
@@ -140,7 +144,7 @@ fun DashboardScreen(
                     color = MaterialTheme.colorScheme.onBackground,
                 )
                 Text(
-                    text = "MediaTek Band & Carrier Aggregation Controller",
+                    text = "Xiaomi & MediaTek Band Controller",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -150,8 +154,7 @@ fun DashboardScreen(
             Surface(
                 shape = CircleShape,
                 color = if (isShizukuActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer,
-                modifier = Modifier
-                    .bouncyClickable { showSetupDialog = true },
+                modifier = Modifier.bouncyClickable { showSetupDialog = true },
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -165,7 +168,7 @@ fun DashboardScreen(
                         tint = if (isShizukuActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer,
                     )
                     Text(
-                        text = if (isShizukuActive) "Shizuku Shell Active" else "Setup Shizuku",
+                        text = if (isShizukuActive) "Shizuku Active" else "Setup Shizuku",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = if (isShizukuActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer,
                     )
@@ -346,16 +349,16 @@ fun DashboardScreen(
                         FilterChip(
                             selected = (selectedSubId ?: 1) == subId,
                             onClick = { selectedSubId = subId },
-                            label = { Text("SIM $subId") },
+                            label = { Text("SIM $subId (IR-MCI)") },
                         )
                     }
                 }
             }
         }
 
-        // 1-TAP MEDIA TEK HARDWARE BAND ACTION GRID
+        // 1-TAP HARDWARE BAND ACTION GRID
         Text(
-            text = "MediaTek Hardware Band & CA Controls:",
+            text = "Xiaomi / Poco Hardware Band & CA Controls:",
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
         )
 
@@ -364,8 +367,8 @@ fun DashboardScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             ActionCard(
-                title = "MTK BandMode",
-                description = "Direct 1-tap lock for B1, B3, B7, B42 & n78 bands",
+                title = "Xiaomi BandMode",
+                description = "Direct hardware band selection for B1, B3, B7, B42 & n78",
                 icon = Icons.Rounded.Tune,
                 primaryColor = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.weight(1f),
@@ -377,8 +380,8 @@ fun DashboardScreen(
             )
 
             ActionCard(
-                title = "MTK CA Config",
-                description = "Carrier Aggregation & EN-DC Band combination",
+                title = "CA Config",
+                description = "Carrier Aggregation & Mobile Network Settings",
                 icon = Icons.Rounded.Bolt,
                 primaryColor = MaterialTheme.colorScheme.secondary,
                 modifier = Modifier.weight(1f),
@@ -395,8 +398,8 @@ fun DashboardScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             ActionCard(
-                title = "System RadioInfo",
-                description = "AOSP Testing Menu (*#*#4636#*#*)",
+                title = "RadioInfo Testing",
+                description = "Phone Testing Menu (*#*#4636#*#*)",
                 icon = Icons.Rounded.NetworkCheck,
                 primaryColor = MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier.weight(1f),
@@ -449,6 +452,7 @@ fun DashboardScreen(
                                     is SwitchResult.Failure -> "⚠️ ${res.reason}"
                                 }
                                 Toast.makeText(context, statusText, Toast.LENGTH_SHORT).show()
+                                telemetryEngine.refreshNow(selectedSubId)
                                 isSwitchingMode = false
                             }
                         },
@@ -468,6 +472,7 @@ fun DashboardScreen(
                                     is SwitchResult.Failure -> "⚠️ ${res.reason}"
                                 }
                                 Toast.makeText(context, statusText, Toast.LENGTH_SHORT).show()
+                                telemetryEngine.refreshNow(selectedSubId)
                                 isSwitchingMode = false
                             }
                         },
@@ -487,6 +492,7 @@ fun DashboardScreen(
                                     is SwitchResult.Failure -> "⚠️ ${res.reason}"
                                 }
                                 Toast.makeText(context, statusText, Toast.LENGTH_SHORT).show()
+                                telemetryEngine.refreshNow(selectedSubId)
                                 isSwitchingMode = false
                             }
                         },
