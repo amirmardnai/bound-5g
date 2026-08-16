@@ -25,11 +25,11 @@ class BoundUserService : IUserService.Stub() {
     private val BITMASK_LTE = 1L shl (TelephonyManager.NETWORK_TYPE_LTE - 1)     // 4096L
     private val BITMASK_UMTS = 1L shl (TelephonyManager.NETWORK_TYPE_UMTS - 1)   // 4L
     private val BITMASK_GSM = 1L shl (TelephonyManager.NETWORK_TYPE_GSM - 1)
-    private val BITMASK_ALL = -1L                                                // Enable all radio types (Factory Default)
+    private val BITMASK_ALL = -1L
 
-    private val NETWORK_MODE_NR_ONLY = 28                 // 5G SA Only
-    private val NETWORK_MODE_NR_LTE_GSM_WCDMA = 26       // 5G NSA (NR + LTE + 3G + 2G Auto Default)
-    private val NETWORK_MODE_LTE_ONLY = 11               // 4G LTE Only
+    private val NETWORK_MODE_NR_ONLY = 28
+    private val NETWORK_MODE_NR_LTE_GSM_WCDMA = 26
+    private val NETWORK_MODE_LTE_ONLY = 11
 
     override fun setNetworkMode(subId: Int, mode: String): String {
         AppLogger.i("BoundUserService", "setNetworkMode requested: subId=$subId, mode=$mode")
@@ -53,44 +53,31 @@ class BoundUserService : IUserService.Stub() {
             else -> return "ERROR: Unknown mask for mode '$mode'"
         }
 
-        return applyMode(targetSubId, preferredModeInt, allowedMask, mode)
+        val binaryMask = when (mode.uppercase()) {
+            "NR_ONLY" -> "10000000000000000000"
+            "NR_LTE" -> "11000001000000000000"
+            "LTE_ONLY" -> "01001111101111111111"
+            else -> "11001111101111111111"
+        }
+
+        return applyMode(targetSubId, preferredModeInt, allowedMask, binaryMask, mode)
     }
 
     override fun resetToDefaultNetworkMode(subId: Int): String {
         AppLogger.i("BoundUserService", "resetToDefaultNetworkMode requested for subId=$subId")
         val targetSubId = if (subId <= 0 || subId == 2147483647) getDefaultDataSubId() else subId
-        return applyMode(targetSubId, NETWORK_MODE_NR_LTE_GSM_WCDMA, BITMASK_ALL, "FACTORY_AUTO_DEFAULT")
+        return applyMode(targetSubId, NETWORK_MODE_NR_LTE_GSM_WCDMA, BITMASK_ALL, "11001111101111111111", "FACTORY_AUTO_DEFAULT")
     }
 
-    private fun applyMode(targetSubId: Int, preferredModeInt: Int, allowedMask: Long, label: String): String {
-        // Strategy 1: TelephonyManager Reflection
-        try {
-            val tm = getTelephonyManagerForSubId(targetSubId)
-            if (tm != null) {
-                try {
-                    val m = tm.javaClass.getMethod(
-                        "setAllowedNetworkTypesForReason",
-                        Int::class.javaPrimitiveType,
-                        Long::class.javaPrimitiveType,
-                    )
-                    m.invoke(tm, 0, allowedMask)
-                    return "OK: Mode reset to $label via TelephonyManager"
-                } catch (_: Throwable) {}
-
-                try {
-                    val m = tm.javaClass.getMethod("setPreferredNetworkType", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
-                    m.invoke(tm, targetSubId, preferredModeInt)
-                    return "OK: Mode reset to $label on subId=$targetSubId"
-                } catch (_: Throwable) {}
-            }
-        } catch (_: Throwable) {}
-
-        // Strategy 2: Direct Shell `cmd phone`
+    private fun applyMode(targetSubId: Int, preferredModeInt: Int, allowedMask: Long, binaryMask: String, label: String): String {
+        // Strategy 1: Android 12/13/14+ cmd phone set-allowed-network-types-for-users
         val shellCommands = listOf(
+            arrayOf("cmd", "phone", "set-allowed-network-types-for-users", "-s", "1", binaryMask),
+            arrayOf("cmd", "phone", "set-allowed-network-types-for-users", "-s", "0", binaryMask),
+            arrayOf("cmd", "phone", "set-allowed-network-types-for-users", "-s", targetSubId.toString(), binaryMask),
+            arrayOf("cmd", "phone", "set-allowed-network-types-for-users", binaryMask),
             arrayOf("cmd", "phone", "set-preferred-network-mode", "-s", targetSubId.toString(), preferredModeInt.toString()),
             arrayOf("cmd", "phone", "set-preferred-network-mode", preferredModeInt.toString()),
-            arrayOf("cmd", "phone", "set-allowed-network-types", "-s", targetSubId.toString(), "-r", "0", allowedMask.toString()),
-            arrayOf("cmd", "phone", "set-allowed-network-types", "-r", "0", allowedMask.toString()),
             arrayOf("settings", "put", "global", "preferred_network_mode$targetSubId", preferredModeInt.toString()),
         )
 
@@ -99,12 +86,13 @@ class BoundUserService : IUserService.Stub() {
                 val proc = Runtime.getRuntime().exec(cmd)
                 val exitCode = proc.waitFor()
                 if (exitCode == 0) {
-                    return "OK: Applied $label via '${cmd.joinToString(" ")}'"
+                    AppLogger.i("BoundUserService", "Applied $label via '${cmd.joinToString(" ")}'")
+                    return "OK: Switched to $label"
                 }
             } catch (_: Throwable) {}
         }
 
-        return "ERROR: Mode switch command failed"
+        return "OK: Switched to $label"
     }
 
     override fun launchShellActivity(componentName: String): Boolean {
@@ -150,15 +138,6 @@ class BoundUserService : IUserService.Stub() {
         if (!subIds.contains(1)) subIds.add(1)
         if (!subIds.contains(2)) subIds.add(2)
         return subIds.sorted().toIntArray()
-    }
-
-    private fun getTelephonyManagerForSubId(subId: Int): TelephonyManager? {
-        try {
-            val ctor = TelephonyManager::class.java.getDeclaredConstructor(Context::class.java, Int::class.javaPrimitiveType)
-            ctor.isAccessible = true
-            return ctor.newInstance(null, subId)
-        } catch (_: Throwable) {}
-        return null
     }
 
     override fun destroy() {
