@@ -8,8 +8,9 @@ import android.net.Uri
 import android.os.Build
 import android.service.quicksettings.TileService
 import com.app.bound.util.AppLogger
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 /**
  * Universal Hardware Activity & Xiaomi / MediaTek Band Discovery Engine.
@@ -51,16 +52,16 @@ object MTKBandResolver {
         "com.android.phone/com.android.phone.MobileNetworkSettings",
     )
 
-    suspend fun launchComponent(
+    fun launchComponent(
         context: Context,
         componentString: String,
         shizukuManager: ShizukuBandManager? = null,
         onLaunched: (Boolean, String) -> Unit,
-    ) = withContext(Dispatchers.Main) {
+    ) {
         val parts = componentString.split("/")
         if (parts.size != 2) {
             onLaunched(false, "Invalid component format: $componentString")
-            return@withContext
+            return
         }
         val pkg = parts[0]
         val cls = parts[1]
@@ -68,7 +69,7 @@ object MTKBandResolver {
 
         AppLogger.i("MTKBandResolver", "Attempting to launch $componentString")
 
-        // Strategy 1: Direct standard Intent launch (Works natively for MiuiBandMode and RadioInfo!)
+        // Strategy 1: Direct standard Intent launch (Works natively for MiuiBandMode and RadioInfo on Xiaomi!)
         val intent = Intent().apply {
             component = componentName
             action = Intent.ACTION_MAIN
@@ -83,25 +84,29 @@ object MTKBandResolver {
             }
             AppLogger.i("MTKBandResolver", "Launched $componentString via standard Intent")
             onLaunched(true, "Launched $cls")
-            return@withContext
+            return
         } catch (e: Exception) {
             AppLogger.w("MTKBandResolver", "Direct launch failed for $componentString: ${e.message}")
         }
 
         // Strategy 2: If direct launch had permission denial, try via Shizuku Shell IPC
         if (shizukuManager != null && shizukuManager.isAuthorized()) {
-            val shellSuccess = shizukuManager.launchShellActivity(componentString)
-            if (shellSuccess) {
-                AppLogger.i("MTKBandResolver", "Launched $componentString via Shizuku Shell IPC")
-                onLaunched(true, "Launched via Shizuku Shell IPC ($cls)")
-                return@withContext
+            CoroutineScope(Dispatchers.Main).launch {
+                val shellSuccess = shizukuManager.launchShellActivity(componentString)
+                if (shellSuccess) {
+                    AppLogger.i("MTKBandResolver", "Launched $componentString via Shizuku Shell IPC")
+                    onLaunched(true, "Launched via Shizuku Shell IPC ($cls)")
+                } else {
+                    onLaunched(false, "Could not open $cls")
+                }
             }
+            return
         }
 
         onLaunched(false, "Could not open $cls")
     }
 
-    suspend fun launchFirstWorking(
+    fun launchFirstWorking(
         context: Context,
         components: List<String>,
         shizukuManager: ShizukuBandManager? = null,
