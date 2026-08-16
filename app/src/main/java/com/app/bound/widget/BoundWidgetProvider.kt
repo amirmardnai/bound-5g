@@ -32,8 +32,12 @@ class BoundWidgetProvider : AppWidgetProvider() {
 
         if (action == ACTION_OPEN_MTK_BAND) {
             val shizuku = ShizukuBandManager(context.applicationContext)
-            MTKBandResolver.launchFirstWorking(context, MTKBandResolver.MTK_BAND_COMPONENTS, shizuku) { _, msg ->
-                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            val pending = goAsync()
+            CoroutineScope(Dispatchers.Main).launch {
+                MTKBandResolver.launchFirstWorking(context, MTKBandResolver.MTK_BAND_COMPONENTS, shizuku) { _, msg ->
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                }
+                pending.finish()
             }
             return
         }

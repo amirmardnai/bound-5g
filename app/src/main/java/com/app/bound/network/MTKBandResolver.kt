@@ -8,19 +8,23 @@ import android.net.Uri
 import android.os.Build
 import android.service.quicksettings.TileService
 import com.app.bound.util.AppLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
- * Universal Hardware Activity & MediaTek EngineerMode Discovery Engine.
+ * Universal Hardware Activity & Xiaomi / MediaTek Band Discovery Engine.
  * Dynamically resolves and launches:
- * 1. MediaTek BandSelect (Hardware Band Toggling on Xiaomi/Poco Dimensity)
- * 2. MediaTek Carrier Aggregation Config (CA State & Band Combos)
- * 3. MediaTek ModemTest Activity
- * 4. AOSP / Stock RadioInfo Testing Menu (*#*#4636#*#*)
+ * 1. Xiaomi Native MiuiBandMode (Hardware Band Selection on Poco / HyperOS)
+ * 2. Xiaomi RadioInfo Testing Menu
+ * 3. MediaTek EngineerMode & BandSelect
+ * 4. MediaTek Carrier Aggregation Config
  */
 object MTKBandResolver {
 
-    // Primary MediaTek Band Selection Activities
+    // Xiaomi & MediaTek Hardware Band Selection Activities
     val MTK_BAND_COMPONENTS = listOf(
+        "com.android.phone/com.android.phone.settings.MiuiBandMode",
+        "com.android.phone/com.android.phone.settings.RadioInfo",
         "com.mediatek.engineermode/com.mediatek.engineermode.bandselect.BandSelect",
         "com.mediatek.engineermode/com.mediatek.engineermode.bandselect.BandMode",
         "com.mediatek.engineermode/com.mediatek.engineermode.modemtest.ModemTestActivity",
@@ -29,6 +33,8 @@ object MTKBandResolver {
 
     // MediaTek Carrier Aggregation (CA) Configuration Activities
     val MTK_CA_COMPONENTS = listOf(
+        "com.android.phone/com.android.phone.settings.MobileNetworkSettings",
+        "com.android.phone/com.android.phone.settings.NetworkSetting",
         "com.mediatek.engineermode/com.mediatek.engineermode.ca.CaActivity",
         "com.mediatek.engineermode/com.mediatek.engineermode.ca.CaConfigActivity",
         "com.mediatek.engineermode/com.mediatek.engineermode.nr.NrConfigActivity",
@@ -37,24 +43,24 @@ object MTKBandResolver {
 
     // Universal RadioInfo Testing Menus
     val RADIO_INFO_COMPONENTS = listOf(
+        "com.android.phone/com.android.phone.settings.RadioInfo",
         "com.android.settings/com.android.settings.RadioInfo",
         "com.android.settings/com.android.settings.Settings\$RadioInfoActivity",
         "com.android.settings/com.android.settings.TestingSettings",
-        "com.android.phone/com.android.phone.settings.RadioInfo",
         "com.android.phone/com.android.phone.RadioInfo",
         "com.android.phone/com.android.phone.MobileNetworkSettings",
     )
 
-    fun launchComponent(
+    suspend fun launchComponent(
         context: Context,
         componentString: String,
         shizukuManager: ShizukuBandManager? = null,
         onLaunched: (Boolean, String) -> Unit,
-    ) {
+    ) = withContext(Dispatchers.Main) {
         val parts = componentString.split("/")
         if (parts.size != 2) {
             onLaunched(false, "Invalid component format: $componentString")
-            return
+            return@withContext
         }
         val pkg = parts[0]
         val cls = parts[1]
@@ -62,21 +68,10 @@ object MTKBandResolver {
 
         AppLogger.i("MTKBandResolver", "Attempting to launch $componentString")
 
-        // Strategy 1: If Shizuku is authorized, use Shell UID to launch non-exported system activities!
-        if (shizukuManager != null && shizukuManager.isAuthorized()) {
-            val shellSuccess = shizukuManager.launchShellActivity(componentString)
-            if (shellSuccess) {
-                AppLogger.i("MTKBandResolver", "Launched $componentString via Shizuku Shell IPC")
-                onLaunched(true, "Launched via Shizuku Shell IPC ($cls)")
-                return
-            }
-        }
-
-        // Strategy 2: Direct standard Intent launch
+        // Strategy 1: Direct standard Intent launch (Works natively for MiuiBandMode and RadioInfo!)
         val intent = Intent().apply {
             component = componentName
             action = Intent.ACTION_MAIN
-            addCategory(Intent.CATEGORY_LAUNCHER)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
 
@@ -88,13 +83,25 @@ object MTKBandResolver {
             }
             AppLogger.i("MTKBandResolver", "Launched $componentString via standard Intent")
             onLaunched(true, "Launched $cls")
+            return@withContext
         } catch (e: Exception) {
             AppLogger.w("MTKBandResolver", "Direct launch failed for $componentString: ${e.message}")
-            onLaunched(false, "Direct launch restricted (${e.message}). Enable Shizuku for 1-tap unrooted launch.")
         }
+
+        // Strategy 2: If direct launch had permission denial, try via Shizuku Shell IPC
+        if (shizukuManager != null && shizukuManager.isAuthorized()) {
+            val shellSuccess = shizukuManager.launchShellActivity(componentString)
+            if (shellSuccess) {
+                AppLogger.i("MTKBandResolver", "Launched $componentString via Shizuku Shell IPC")
+                onLaunched(true, "Launched via Shizuku Shell IPC ($cls)")
+                return@withContext
+            }
+        }
+
+        onLaunched(false, "Could not open $cls")
     }
 
-    fun launchFirstWorking(
+    suspend fun launchFirstWorking(
         context: Context,
         components: List<String>,
         shizukuManager: ShizukuBandManager? = null,
@@ -112,7 +119,7 @@ object MTKBandResolver {
                 return
             }
         }
-        onResult(false, "Could not open MediaTek activities directly. Start Shizuku Wireless Debugging to bypass HyperOS permissions.")
+        onResult(false, "Could not open band activities directly. Please check Developer Options permissions.")
     }
 
     fun openDialerWithCode(context: Context, secretCode: String) {

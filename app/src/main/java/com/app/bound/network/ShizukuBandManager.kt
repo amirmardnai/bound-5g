@@ -92,7 +92,7 @@ class ShizukuBandManager(private val context: Context) {
         }
     }
 
-    private suspend fun ensureBound(): Boolean {
+    suspend fun ensureBound(): Boolean {
         if (service != null) return true
         if (!isAuthorized()) return false
         return suspendCancellableCoroutine { cont ->
@@ -132,13 +132,15 @@ class ShizukuBandManager(private val context: Context) {
 
     suspend fun resetToDefault(subId: Int? = null): SwitchResult = switchNetworkMode(BoundNetworkMode.AUTO_DEFAULT, subId)
 
-    fun launchShellActivity(componentName: String): Boolean {
-        val svc = service
-        return try {
-            svc?.launchShellActivity(componentName) ?: false
-        } catch (_: Throwable) {
-            false
+    suspend fun launchShellActivity(componentName: String): Boolean = withContext(Dispatchers.IO) {
+        if (isAuthorized() && ensureBound()) {
+            try {
+                return@withContext service?.launchShellActivity(componentName) ?: false
+            } catch (t: Throwable) {
+                AppLogger.e("ShizukuBandManager", "launchShellActivity IPC error", t)
+            }
         }
+        false
     }
 
     suspend fun getAvailableSubIds(): List<Int> = withContext(Dispatchers.IO) {
