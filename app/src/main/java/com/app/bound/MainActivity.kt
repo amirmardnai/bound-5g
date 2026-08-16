@@ -1,9 +1,13 @@
 package com.app.bound
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,7 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.navigation.NavHostController
+import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -23,10 +27,7 @@ import androidx.navigation.compose.rememberNavController
 import com.app.bound.network.BoundNetworkMode
 import com.app.bound.network.ShizukuBandManager
 import com.app.bound.network.TelemetryEngine
-import com.app.bound.screens.AboutScreen
-import com.app.bound.screens.BandGuideScreen
-import com.app.bound.screens.DashboardScreen
-import com.app.bound.screens.SettingsScreen
+import com.app.bound.screens.*
 import com.app.bound.ui.components.BoundBottomNav
 import com.app.bound.ui.theme.BoundTheme
 import com.app.bound.util.AppLogger
@@ -64,6 +65,27 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             BoundTheme(prefs = prefs) {
+                // Request Cellular & Location permissions for reading cell towers
+                val permLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestMultiplePermissions(),
+                ) {
+                    telemetryEngine.refreshNow()
+                }
+
+                LaunchedEffect(Unit) {
+                    val permissions = arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                        Manifest.permission.READ_PHONE_STATE,
+                    )
+                    val needed = permissions.filter {
+                        ContextCompat.checkSelfPermission(this@MainActivity, it) != PackageManager.PERMISSION_GRANTED
+                    }
+                    if (needed.isNotEmpty()) {
+                        permLauncher.launch(needed.toTypedArray())
+                    }
+                }
+
                 Surface(modifier = Modifier.fillMaxSize()) {
                     MainAppScaffold(
                         prefs = prefs,
@@ -101,6 +123,12 @@ fun MainAppScaffold(
             composable("dashboard") {
                 DashboardScreen(
                     prefs = prefs,
+                    telemetryEngine = telemetryEngine,
+                    shizukuManager = shizukuManager,
+                )
+            }
+            composable("scanner") {
+                ScannerScreen(
                     telemetryEngine = telemetryEngine,
                     shizukuManager = shizukuManager,
                 )

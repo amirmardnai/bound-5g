@@ -56,11 +56,11 @@ fun BoundBottomNav(
         tonalElevation = 8.dp,
         shadowElevation = 10.dp,
         modifier = modifier
-            .padding(horizontal = 24.dp)
+            .padding(horizontal = 16.dp)
             .height(64.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -71,7 +71,13 @@ fun BoundBottomNav(
                 onClick = { onNavigate("dashboard") },
             )
             NavItem(
-                label = "Bands & CA",
+                label = "Scanner",
+                icon = Icons.Rounded.Sensors,
+                selected = currentRoute == "scanner",
+                onClick = { onNavigate("scanner") },
+            )
+            NavItem(
+                label = "Bands",
                 icon = Icons.Rounded.Tune,
                 selected = currentRoute == "bands",
                 onClick = { onNavigate("bands") },
@@ -81,12 +87,6 @@ fun BoundBottomNav(
                 icon = Icons.Rounded.Settings,
                 selected = currentRoute == "settings",
                 onClick = { onNavigate("settings") },
-            )
-            NavItem(
-                label = "About",
-                icon = Icons.Rounded.Info,
-                selected = currentRoute == "about",
-                onClick = { onNavigate("about") },
             )
         }
     }
@@ -108,9 +108,9 @@ private fun NavItem(
         modifier = Modifier.bouncyClickable(scaleDown = 0.9f) { onClick() },
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(20.dp))
             if (selected) {

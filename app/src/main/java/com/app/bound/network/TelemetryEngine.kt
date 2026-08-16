@@ -1,12 +1,7 @@
 package com.app.bound.network
 
 import android.content.Context
-import android.os.Build
-import android.telephony.CellInfoLte
-import android.telephony.CellInfoNr
-import android.telephony.CellSignalStrengthLte
-import android.telephony.CellSignalStrengthNr
-import android.telephony.TelephonyManager
+import android.telephony.*
 import com.app.bound.util.AppLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,10 +12,27 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+data class CellTower(
+    val id: String,
+    val rat: String,                 // "5G NR", "4G LTE", "3G"
+    val band: FrequencyBandHelper.BandInfo,
+    val isServing: Boolean,
+    val isAggregated: Boolean,
+    val rsrpDbm: Int,
+    val rsrqDb: Int,
+    val sinrDb: Int,
+    val signalLevel: Int,            // 0..4
+    val pci: Int,                    // Physical Cell ID
+    val tac: Int,                    // Tracking Area Code
+    val earfcn: Int,
+    val enodebId: Int = 0,
+    val bandwidthMhz: Int = 20,
+)
+
 data class CellularState(
     val carrierName: String = "Detecting Operator…",
     val networkGeneration: String = "4G LTE / 5G",
-    val primaryBand: FrequencyBandHelper.BandInfo = FrequencyBandHelper.BandInfo("Detecting…", "Scanning…", "FDD", "Primary Anchor", true),
+    val primaryBand: FrequencyBandHelper.BandInfo = FrequencyBandHelper.BandInfo("B3", "1800 MHz (FDD)", "FDD", "Primary Anchor", true),
     val secondaryBands: List<FrequencyBandHelper.BandInfo> = emptyList(),
     val isCarrierAggregationActive: Boolean = false,
     val totalBandwidthText: String = "20 MHz",
@@ -32,6 +44,8 @@ data class CellularState(
     val tac: Int = 0,
     val earfcn: Int = 0,
     val is5gConnected: Boolean = false,
+    val allVisibleTowers: List<CellTower> = emptyList(),
+    val bestRecommendedBand: String = "B3 (1800 MHz) + B7 (2600 MHz)",
 )
 
 class TelemetryEngine(private val context: Context) {
@@ -49,7 +63,7 @@ class TelemetryEngine(private val context: Context) {
         scope.launch {
             while (isActive && isPolling) {
                 pollSignal(subId)
-                delay(3000) // Poll every 3s
+                delay(2500) // Poll every 2.5s
             }
         }
     }
@@ -73,10 +87,13 @@ class TelemetryEngine(private val context: Context) {
                 } else base
             } ?: return
 
-            val carrier = tm.networkOperatorName.ifBlank { tm.simOperatorName.ifBlank { "Cellular Radio" } }
+            val carrier = runCatching {
+                tm.networkOperatorName.ifBlank { tm.simOperatorName.ifBlank { "Cellular Network" } }
+            }.getOrDefault("Cellular Network")
 
-            var primaryBand = FrequencyBandHelper.BandInfo("B3", "1800 MHz (FDD)", "FDD", "MCI / Irancell 4G", true)
+            var primaryBand = FrequencyBandHelper.BandInfo("B3", "1800 MHz (FDD)", "FDD", "Primary LTE Anchor", true)
             val secondaryBands = mutableListOf<FrequencyBandHelper.BandInfo>()
+            val towersList = mutableListOf<CellTower>()
             var isCa = false
             var rsrp = -85
             var rsrq = -10
@@ -87,68 +104,108 @@ class TelemetryEngine(private val context: Context) {
             var earfcn = 1650
             var is5g = false
 
-            val dataNetworkType = tm.dataNetworkType
+            // Safe read data network type without throwing SecurityException
+            val dataNetworkType = runCatching { tm.dataNetworkType }.getOrDefault(TelephonyManager.NETWORK_TYPE_UNKNOWN)
             val isData5g = dataNetworkType == TelephonyManager.NETWORK_TYPE_NR
 
             try {
-                val cellInfos = tm.allCellInfo
+                val cellInfos = runCatching { tm.allCellInfo }.getOrNull()
                 if (!cellInfos.isNullOrEmpty()) {
-                    val nrInfos = cellInfos.filterIsInstance<CellInfoNr>()
-                    val lteInfos = cellInfos.filterIsInstance<CellInfoLte>()
+                    for ((index, info) in cellInfos.withIndex()) {
+                        when (info) {
+                            is CellInfoNr -> {
+                                is5g = true
+                                val id = info.cellIdentity as? CellIdentityNr
+                                val sig = info.cellSignalStrength as? CellSignalStrengthNr
+                                val cellRsrp = sig?.dbm ?: -85
+                                val cellRsrq = sig?.csiRsrq ?: -10
+                                val cellSinr = sig?.csiSinr ?: 20
+                                val cellPci = id?.pci ?: 0
+                                val cellTac = id?.tac ?: 0
 
-                    if (nrInfos.isNotEmpty()) {
-                        is5g = true
-                        val primaryNr = nrInfos[0]
-                        val nrSignal = primaryNr.cellSignalStrength as? CellSignalStrengthNr
-                        rsrp = nrSignal?.dbm ?: -82
-                        rsrq = nrSignal?.csiRsrq ?: -9
-                        sinr = nrSignal?.csiSinr ?: 22
-                        level = nrSignal?.level ?: 4
+                                val cellArfcn = runCatching {
+                                    val m = id?.javaClass?.getMethod("getNrarfcn")
+                                    m?.invoke(id) as? Int ?: 632000
+                                }.getOrDefault(632000)
 
-                        // Try resolve NR ARFCN
-                        try {
-                            val id = primaryNr.cellIdentity
-                            val nrarfcnMethod = id.javaClass.getMethod("getNrarfcn")
-                            val arfcnVal = nrarfcnMethod.invoke(id) as? Int ?: 632000
-                            earfcn = arfcnVal
-                            primaryBand = FrequencyBandHelper.getNrBandFromArfcn(arfcnVal)
-                        } catch (_: Throwable) {
-                            primaryBand = FrequencyBandHelper.BandInfo("n78", "3500 MHz (TDD)", "TDD", "Iran 5G High Speed (Gold Band)", true)
-                        }
+                                val nrBand = FrequencyBandHelper.getNrBandFromArfcn(cellArfcn)
 
-                        // Check LTE anchor cells for EN-DC Carrier Aggregation
-                        if (lteInfos.isNotEmpty()) {
-                            isCa = true
-                            lteInfos.take(3).forEach { lteCell ->
-                                val lteEarfcn = lteCell.cellIdentity.earfcn
-                                val band = FrequencyBandHelper.getLteBandFromEarfcn(lteEarfcn)
-                                if (!secondaryBands.contains(band) && band.bandNumber != primaryBand.bandNumber) {
-                                    secondaryBands.add(band)
+                                if (info.isRegistered) {
+                                    rsrp = cellRsrp
+                                    rsrq = cellRsrq
+                                    sinr = cellSinr
+                                    level = sig?.level ?: 4
+                                    pci = cellPci
+                                    tac = cellTac
+                                    earfcn = cellArfcn
+                                    primaryBand = nrBand
                                 }
+
+                                towersList.add(
+                                    CellTower(
+                                        id = "nr_$index",
+                                        rat = "5G NR",
+                                        band = nrBand,
+                                        isServing = info.isRegistered,
+                                        isAggregated = isCa,
+                                        rsrpDbm = cellRsrp,
+                                        rsrqDb = cellRsrq,
+                                        sinrDb = cellSinr,
+                                        signalLevel = sig?.level ?: 3,
+                                        pci = cellPci,
+                                        tac = cellTac,
+                                        earfcn = cellArfcn,
+                                    )
+                                )
                             }
-                        }
-                    } else if (lteInfos.isNotEmpty()) {
-                        val primaryLte = lteInfos.firstOrNull { it.isRegistered } ?: lteInfos[0]
-                        val lteSignal = primaryLte.cellSignalStrength as? CellSignalStrengthLte
-                        rsrp = lteSignal?.rsrp ?: lteSignal?.dbm ?: -90
-                        rsrq = lteSignal?.rsrq ?: -11
-                        sinr = lteSignal?.rssnr ?: 15
-                        level = lteSignal?.level ?: 3
-                        pci = primaryLte.cellIdentity.pci
-                        tac = primaryLte.cellIdentity.tac
-                        earfcn = primaryLte.cellIdentity.earfcn
-                        primaryBand = FrequencyBandHelper.getLteBandFromEarfcn(earfcn)
+                            is CellInfoLte -> {
+                                val id = info.cellIdentity
+                                val sig = info.cellSignalStrength
+                                val cellRsrp = sig.rsrp
+                                val cellRsrq = sig.rsrq
+                                val cellSinr = sig.rssnr
+                                val cellPci = id.pci
+                                val cellTac = id.tac
+                                val cellEarfcn = id.earfcn
+                                val cellBand = FrequencyBandHelper.getLteBandFromEarfcn(cellEarfcn)
+                                val enb = if (id.ci > 0) id.ci shr 8 else 0
 
-                        // Additional non-registered LTE cells indicate active SCell Carrier Aggregation
-                        val sCells = lteInfos.filter { it != primaryLte }
-                        if (sCells.isNotEmpty()) {
-                            isCa = true
-                            sCells.take(2).forEach { sCell ->
-                                val sEarfcn = sCell.cellIdentity.earfcn
-                                val sBand = FrequencyBandHelper.getLteBandFromEarfcn(sEarfcn)
-                                if (!secondaryBands.contains(sBand) && sBand.bandNumber != primaryBand.bandNumber) {
-                                    secondaryBands.add(sBand)
+                                if (info.isRegistered) {
+                                    if (!is5g) {
+                                        rsrp = cellRsrp
+                                        rsrq = cellRsrq
+                                        sinr = cellSinr
+                                        level = sig.level
+                                        pci = cellPci
+                                        tac = cellTac
+                                        earfcn = cellEarfcn
+                                        primaryBand = cellBand
+                                    }
+                                } else {
+                                    // Neighbor or Secondary Component Carrier
+                                    if (!secondaryBands.contains(cellBand) && cellBand.bandNumber != primaryBand.bandNumber) {
+                                        secondaryBands.add(cellBand)
+                                        isCa = true
+                                    }
                                 }
+
+                                towersList.add(
+                                    CellTower(
+                                        id = "lte_$index",
+                                        rat = "4G LTE",
+                                        band = cellBand,
+                                        isServing = info.isRegistered,
+                                        isAggregated = !info.isRegistered && isCa,
+                                        rsrpDbm = cellRsrp,
+                                        rsrqDb = cellRsrq,
+                                        sinrDb = cellSinr,
+                                        signalLevel = sig.level,
+                                        pci = cellPci,
+                                        tac = cellTac,
+                                        earfcn = cellEarfcn,
+                                        enodebId = enb,
+                                    )
+                                )
                             }
                         }
                     }
@@ -157,15 +214,40 @@ class TelemetryEngine(private val context: Context) {
                 AppLogger.d("TelemetryEngine", "CellInfo read non-fatal: ${t.message}")
             }
 
+            // If list empty, create placeholder based on primary
+            if (towersList.isEmpty()) {
+                towersList.add(
+                    CellTower(
+                        id = "primary_default",
+                        rat = if (is5g || isData5g) "5G NR" else "4G LTE",
+                        band = primaryBand,
+                        isServing = true,
+                        isAggregated = isCa,
+                        rsrpDbm = rsrp,
+                        rsrqDb = rsrq,
+                        sinrDb = sinr,
+                        signalLevel = level,
+                        pci = pci,
+                        tac = tac,
+                        earfcn = earfcn,
+                    )
+                )
+            }
+
             val gen = when {
                 is5g && isCa -> "5G Dual Connectivity (EN-DC 4.5G+5G)"
                 is5g || isData5g -> "5G Standalone (NR SA)"
                 isCa -> "4.5G LTE-Advanced (Carrier Aggregation Active)"
-                dataNetworkType == TelephonyManager.NETWORK_TYPE_LTE -> "4G LTE Single Carrier"
+                dataNetworkType == TelephonyManager.NETWORK_TYPE_LTE -> "4G LTE"
                 else -> "Cellular Network"
             }
 
             val bandwidth = if (isCa) "${(secondaryBands.size + 1) * 20} MHz (Aggregated)" else "20 MHz"
+
+            val strongestTower = towersList.maxByOrNull { it.rsrpDbm }
+            val recommendation = if (strongestTower != null) {
+                "${strongestTower.band.bandNumber} (${strongestTower.band.frequencyMhz}) with ${strongestTower.rsrpDbm} dBm"
+            } else "B3 (1800 MHz) + B7 (2600 MHz)"
 
             _cellularState.value = CellularState(
                 carrierName = carrier,
@@ -182,6 +264,8 @@ class TelemetryEngine(private val context: Context) {
                 tac = tac,
                 earfcn = earfcn,
                 is5gConnected = is5g || isData5g,
+                allVisibleTowers = towersList.sortedByDescending { it.isServing },
+                bestRecommendedBand = recommendation,
             )
         } catch (e: Exception) {
             AppLogger.e("TelemetryEngine", "Telemetry update failed", e)
