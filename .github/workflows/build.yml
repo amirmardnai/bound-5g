@@ -24,7 +24,9 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
@@ -35,16 +37,16 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Bound-5G-Debug
+          name: Bound-5G-Debug-APK
           path: app/build/outputs/apk/debug/*.apk
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Bound-5G-Release
+          name: Bound-5G-Release-APK
           path: app/build/outputs/apk/release/*.apk
 
-      - name: Create GitHub Release (Optional on tag or main)
+      - name: Create GitHub Release (on tag or manual)
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
