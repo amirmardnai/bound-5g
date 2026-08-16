@@ -14,16 +14,16 @@ import java.util.concurrent.Executors
 
 data class CellTower(
     val id: String,
-    val rat: String,                 // "5G NR", "4G LTE", "3G"
+    val rat: String,
     val band: FrequencyBandHelper.BandInfo,
     val isServing: Boolean,
     val isAggregated: Boolean,
     val rsrpDbm: Int,
     val rsrqDb: Int,
     val sinrDb: Int,
-    val signalLevel: Int,            // 0..4
-    val pci: Int,                    // Physical Cell ID
-    val tac: Int,                    // Tracking Area Code
+    val signalLevel: Int,
+    val pci: Int,
+    val tac: Int,
     val earfcn: Int,
     val enodebId: Int = 0,
     val bandwidthMhz: Int = 20,
@@ -42,7 +42,7 @@ data class CellularState(
     val signalLevel: Int = 4,
     val pci: Int = 0,
     val tac: Int = 0,
-    val earfcn: Int = 0,
+    val earfcn: Int = 1498,
     val is5gConnected: Boolean = false,
     val allVisibleTowers: List<CellTower> = emptyList(),
     val bestRecommendedBand: String = "B3 (1800 MHz) + B7 (2600 MHz)",
@@ -55,17 +55,17 @@ class TelemetryEngine(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private val executor = Executors.newSingleThreadExecutor()
-    private var telephonyCallback: Any? = null
+    private val activeCallbacks = mutableListOf<TelephonyCallback>()
     private var activeSubId: Int? = null
 
     fun startPolling(subId: Int? = null) {
         activeSubId = subId
-        registerLiveCallback(subId)
+        registerLiveCallbacks(subId)
         refreshNow(subId)
     }
 
     fun stopPolling() {
-        unregisterLiveCallback()
+        unregisterLiveCallbacks()
     }
 
     fun refreshNow(subId: Int? = null) {
@@ -86,56 +86,72 @@ class TelemetryEngine(private val context: Context) {
         return base
     }
 
-    private fun registerLiveCallback(subId: Int?) {
-        unregisterLiveCallback()
-        try {
-            val tm = getTargetTelephonyManager(subId)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val callback = object : TelephonyCallback(),
-                    TelephonyCallback.ServiceStateListener,
-                    TelephonyCallback.SignalStrengthsListener,
-                    TelephonyCallback.CellInfoListener,
-                    TelephonyCallback.DisplayInfoListener {
+    private fun registerLiveCallbacks(subId: Int?) {
+        unregisterLiveCallbacks()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val tm = getTargetTelephonyManager(subId)
 
-                    override fun onServiceStateChanged(serviceState: ServiceState) {
-                        parseServiceState(serviceState, tm)
-                    }
+        // Callback 1: ServiceState (Never requires location permission)
+        runCatching {
+            val serviceCallback = object : TelephonyCallback(), TelephonyCallback.ServiceStateListener {
+                override fun onServiceStateChanged(serviceState: ServiceState) {
+                    parseServiceState(serviceState, tm)
+                }
+            }
+            tm.registerTelephonyCallback(executor, serviceCallback)
+            activeCallbacks.add(serviceCallback)
+            AppLogger.i("TelemetryEngine", "Registered ServiceStateListener successfully")
+        }.onFailure { AppLogger.w("TelemetryEngine", "ServiceStateListener failed: ${it.message}") }
 
-                    override fun onSignalStrengthsChanged(signalStrength: SignalStrength) {
-                        parseSignalStrength(signalStrength, tm)
-                    }
-
-                    override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>) {
-                        parseCellInfoList(cellInfo, tm)
-                    }
-
-                    override fun onDisplayInfoChanged(telephonyDisplayInfo: TelephonyDisplayInfo) {
-                        val is5gOverride = telephonyDisplayInfo.overrideNetworkType == TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA ||
-                                telephonyDisplayInfo.overrideNetworkType == TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_ADVANCED
-                        if (is5gOverride) {
-                            _cellularState.value = _cellularState.value.copy(
-                                is5gConnected = true,
-                                networkGeneration = "5G Dual Connectivity (NR NSA 5G+)",
-                            )
-                        }
+        // Callback 2: DisplayInfo (5G icons & NSA detection)
+        runCatching {
+            val displayCallback = object : TelephonyCallback(), TelephonyCallback.DisplayInfoListener {
+                override fun onDisplayInfoChanged(telephonyDisplayInfo: TelephonyDisplayInfo) {
+                    val is5g = telephonyDisplayInfo.overrideNetworkType == TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA ||
+                            telephonyDisplayInfo.overrideNetworkType == TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_ADVANCED
+                    if (is5g) {
+                        _cellularState.value = _cellularState.value.copy(
+                            is5gConnected = true,
+                            networkGeneration = "5G Dual Connectivity (NR NSA 5G+)",
+                        )
                     }
                 }
-                tm.registerTelephonyCallback(executor, callback)
-                telephonyCallback = callback
             }
-        } catch (t: Throwable) {
-            AppLogger.w("TelemetryEngine", "Failed to register TelephonyCallback: ${t.message}")
+            tm.registerTelephonyCallback(executor, displayCallback)
+            activeCallbacks.add(displayCallback)
+        }
+
+        // Callback 3: SignalStrengths
+        runCatching {
+            val signalCallback = object : TelephonyCallback(), TelephonyCallback.SignalStrengthsListener {
+                override fun onSignalStrengthsChanged(signalStrength: SignalStrength) {
+                    parseSignalStrength(signalStrength, tm)
+                }
+            }
+            tm.registerTelephonyCallback(executor, signalCallback)
+            activeCallbacks.add(signalCallback)
+        }
+
+        // Callback 4: CellInfo (Neighboring cells & bands)
+        runCatching {
+            val cellInfoCallback = object : TelephonyCallback(), TelephonyCallback.CellInfoListener {
+                override fun onCellInfoChanged(cellInfo: MutableList<CellInfo>) {
+                    parseCellInfoList(cellInfo, tm)
+                }
+            }
+            tm.registerTelephonyCallback(executor, cellInfoCallback)
+            activeCallbacks.add(cellInfoCallback)
         }
     }
 
-    private fun unregisterLiveCallback() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && telephonyCallback is TelephonyCallback) {
-                val tm = getTargetTelephonyManager(activeSubId)
-                tm.unregisterTelephonyCallback(telephonyCallback as TelephonyCallback)
+    private fun unregisterLiveCallbacks() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val tm = getTargetTelephonyManager(activeSubId)
+            activeCallbacks.forEach { cb ->
+                runCatching { tm.unregisterTelephonyCallback(cb) }
             }
-        } catch (_: Throwable) {}
-        telephonyCallback = null
+            activeCallbacks.clear()
+        }
     }
 
     private fun readCurrentTelephonyState(subId: Int?) {
@@ -162,8 +178,8 @@ class TelemetryEngine(private val context: Context) {
 
     private fun parseServiceState(serviceState: ServiceState, tm: TelephonyManager) {
         val carrier = runCatching {
-            serviceState.operatorAlphaLong.ifBlank { tm.networkOperatorName.ifBlank { "Cellular Network" } }
-        }.getOrDefault("Cellular Network")
+            serviceState.operatorAlphaLong.ifBlank { tm.networkOperatorName.ifBlank { "IR-MCI" } }
+        }.getOrDefault("IR-MCI")
 
         val channelNumber = runCatching { serviceState.channelNumber }.getOrDefault(1498)
         val isCa: Boolean = runCatching {
@@ -317,7 +333,6 @@ class TelemetryEngine(private val context: Context) {
             }
         }
 
-        // If list has no serving tower, inject current primary from ServiceState
         if (!foundServing) {
             towersList.add(
                 0,
@@ -338,7 +353,6 @@ class TelemetryEngine(private val context: Context) {
             )
         }
 
-        // Also add secondary CA carriers to list if active
         for (sec in _cellularState.value.secondaryBands) {
             if (towersList.none { it.band.bandNumber == sec.bandNumber }) {
                 towersList.add(
@@ -371,3 +385,4 @@ class TelemetryEngine(private val context: Context) {
         )
     }
 }
+
