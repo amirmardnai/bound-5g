@@ -25,7 +25,8 @@ class NetworkModeTileService : TileService() {
         val next = when (currentMode) {
             BoundNetworkMode.NR_ONLY -> BoundNetworkMode.NR_LTE
             BoundNetworkMode.NR_LTE -> BoundNetworkMode.LTE_ONLY
-            BoundNetworkMode.LTE_ONLY -> BoundNetworkMode.NR_ONLY
+            BoundNetworkMode.LTE_ONLY -> BoundNetworkMode.AUTO_DEFAULT
+            BoundNetworkMode.AUTO_DEFAULT -> BoundNetworkMode.NR_ONLY
         }
         currentMode = next
         renderTile()
@@ -50,6 +51,7 @@ class NetworkModeTileService : TileService() {
                 BoundNetworkMode.NR_ONLY -> "1. 5G SA"
                 BoundNetworkMode.NR_LTE -> "2. 5G NSA"
                 BoundNetworkMode.LTE_ONLY -> "3. 4G LTE"
+                BoundNetworkMode.AUTO_DEFAULT -> "4. Auto Default"
             }
             updateTile()
         }

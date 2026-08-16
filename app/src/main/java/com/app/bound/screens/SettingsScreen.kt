@@ -115,6 +115,7 @@ fun SettingsScreen(
                                         BoundNetworkMode.NR_ONLY -> "5G SA"
                                         BoundNetworkMode.NR_LTE -> "5G NSA"
                                         BoundNetworkMode.LTE_ONLY -> "4G LTE"
+                                        BoundNetworkMode.AUTO_DEFAULT -> "Auto (Default)"
                                     },
                                 )
                             },
