@@ -166,7 +166,10 @@ class TelemetryEngine(private val context: Context) {
         }.getOrDefault("Cellular Network")
 
         val channelNumber = runCatching { serviceState.channelNumber }.getOrDefault(1498)
-        val isCa = runCatching { serviceState.isUsingCarrierAggregation }.getOrDefault(false)
+        val isCa: Boolean = runCatching {
+            val m = ServiceState::class.java.getMethod("isUsingCarrierAggregation")
+            m.invoke(serviceState) as? Boolean ?: false
+        }.getOrDefault(false)
 
         val cellBandwidths = runCatching { serviceState.cellBandwidths }.getOrDefault(intArrayOf(20000))
         val totalBandwidthMhz = if (cellBandwidths.isNotEmpty()) cellBandwidths.sum() / 1000 else 20
@@ -175,7 +178,6 @@ class TelemetryEngine(private val context: Context) {
 
         val secondaryList = mutableListOf<FrequencyBandHelper.BandInfo>()
         if (cellBandwidths.size > 1) {
-            // Multiple component carriers detected
             if (cellBandwidths.size >= 2) secondaryList.add(FrequencyBandHelper.BandInfo("B7", "2600 MHz (FDD)", "FDD", "High Capacity", false))
             if (cellBandwidths.size >= 3) secondaryList.add(FrequencyBandHelper.BandInfo("B1", "2100 MHz (FDD)", "FDD", "Mid Band", false))
             if (cellBandwidths.size >= 4) secondaryList.add(FrequencyBandHelper.BandInfo("n78", "3500 MHz (TDD)", "TDD", "5G Golden Band", false))
